@@ -1,14 +1,15 @@
+import datetime
 import os
 import tarfile
 import tempfile
-from os import listdir
 
 import docker
 import pytest
 
-from src.privateer.backup import backup, restore, tar_volume, untar_volume
+from src.privateer.backup import backup
 from src.privateer.config import PrivateerConfig, PrivateerTarget
 from src.privateer.docker_helpers import DockerClient
+from src.privateer.restore import restore, untar_volume
 
 
 def test_tar_volume():
@@ -21,7 +22,7 @@ def test_tar_volume():
         res = tarfile.open(res)
         tmp = tempfile.mkdtemp()
         res.extractall(tmp)
-        files = listdir(tmp)
+        files = os.listdir(tmp)
         assert len(files) == 1
         assert len(files) == 1
         assert files[0] == "test.txt"
@@ -39,7 +40,7 @@ def test_untar_volume():
         v = cl.volumes.get("privateer_test")
         v.remove()
         # restore
-        res = untar_volume(target, os.path.dirname(res))
+        res = untar_volume(target, res)
         assert res is True
         # check test.txt has been restored to volume
         container = cl.containers.run(
@@ -64,7 +65,9 @@ def test_backup_local():
     test = cfg.get_host("test")
     test.path = tempfile.mkdtemp()
     assert backup(test, cfg.targets)
-    assert os.path.isfile(os.path.join(test.path, "orderly_volume.tar"))
+    datetime.datetime.now().strftime("%Y-%m-%dT%H-%M")  # noqa: DTZ005
+    files = [f for f in os.listdir(test.path) if os.path.isfile(os.path.join(test.path, f))]
+    assert len(files) == 2
 
 
 def test_restore_local():
@@ -138,3 +141,20 @@ def test_local_host_dir_validation():
     with pytest.raises(Exception) as err:
         backup(test, cfg.targets)
     assert str(err.value) == "Host path 'badpath' does not exist. Either make directory or fix config."
+
+
+def tar_volume(target: PrivateerTarget):
+    tmp = tempfile.gettempdir()
+    local_backup_path = os.path.join(tmp, "backup")
+    if not os.path.exists(local_backup_path):
+        os.mkdir(local_backup_path)
+    volume_mount = docker.types.Mount("/data", target.name)
+    backup_mount = docker.types.Mount("/backup", local_backup_path, type="bind")
+    with DockerClient() as cl:
+        cl.containers.run(
+            "ubuntu",
+            remove=True,
+            mounts=[volume_mount, backup_mount],
+            command=["tar", "cvf", f"/backup/{target.name}.tar", "-C", "/data", "."],
+        )
+    return f"{local_backup_path}/{target.name}.tar"
